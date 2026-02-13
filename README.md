@@ -33,6 +33,7 @@ This repository is organized as a Cargo workspace and is designed for research o
   Public entry crate re-exporting the common API from all internal crates.
   - includes `full_train_loop`, `CharTokenizer`, `SequenceDataset`, `SequenceBatchIter`
   - includes `full_hybrid_train_loop` for gradient + mutation search
+  - includes `full_evolution_train_loop` for mutation-only (no backprop) search
   - includes `Genome` DSL primitives for seed-based program execution
 
 ## Current Status
@@ -53,6 +54,7 @@ Implemented:
 - decoder utilities (`sinusoidal_positional_encoding`, `decoder_next_token_logits`)
 - seed-first genome DSL (`Genome`, `GenomeInstruction`, `kolmogorov_loss`, mutation helper)
 - genome search helpers (`GenomeMutator`, `evolutionary_search_step`)
+- evolution-only training loop for low-memory experiments (`full_evolution_train_loop`)
 - loss functions (`mse`, `l1`, `huber`)
 - optimizers (`SGD`, `Adam`)
 - scalar-loss backward pass for tested operations
@@ -95,6 +97,14 @@ This example now uses a small transformer-style path:
 token embedding + sinusoidal positional encoding + transformer block + LM head.
 After training, it also runs autoregressive generation with temperature/top-k sampling.
 
+Run the tiny chatbot demo (chat-format toy corpus):
+
+```bash
+cargo run -p rsi_ml --example tiny_chat_demo
+# optional custom prompt
+cargo run -p rsi_ml --example tiny_chat_demo -- "user: what is rust?\nassistant:"
+```
+
 Run the mini attention demo:
 
 ```bash
@@ -117,7 +127,53 @@ Run the genome search demo:
 
 ```bash
 cargo run -p rsi_ml --example genome_search_demo
+# disable lookahead drift term
+cargo run -p rsi_ml --example genome_search_demo -- no_lookahead
 ```
+
+This demo now runs in **evolution-only mode** (no backward/optimizer step) and writes per-generation
+metrics to `genome_search_metrics.csv`:
+`generation,base_score,future_score,effective_score,accepted,growth_applied,complexity`.
+
+`effective_score` uses reverse-time validation:
+`effective = base_score + alpha * (future_score - base_score)`.
+
+Run swarm worker/coordinator demos (seed-only exchange for low-bandwidth distributed search):
+
+```bash
+# worker process (run on multiple devices with different worker ids)
+cargo run -p rsi_ml --example swarm_worker -- w0 20 64 1234 swarm_out 3 0.5 2 0.7 12
+cargo run -p rsi_ml --example swarm_worker -- w1 20 64 2234 swarm_out 3 0.5 2 0.7 12
+# disable lookahead in worker scoring
+cargo run -p rsi_ml --example swarm_worker -- w2 20 64 3234 swarm_out 0 0.0 2 0.7 12
+
+# aggregate latest best seeds from workers
+cargo run -p rsi_ml --example swarm_coordinator -- swarm_out
+```
+
+Swarm outputs:
+- `swarm_out/worker_<id>.csv` (per-round local best)
+- `swarm_out/worker_<id>_latest.txt` (latest best seed/base/future/effective)
+- `swarm_out/leaderboard.csv` (coordinator ranking by `effective_score`)
+- `swarm_out/global_best_seed.txt` (current global best)
+
+Worker scoring also supports reverse-time validation:
+`effective_score = base_score + alpha * (future_score - base_score)`.
+
+Island-ES behavior in worker:
+- `pull_every`: how often to read `global_best_seed.txt`
+- `exploit_ratio`: probability of local mutation around pulled global seed
+- `local_radius_bits`: mutation radius in bit-space for local seed search
+
+Run the sleep-phase hybrid training demo:
+
+```bash
+cargo run -p rsi_ml --example sleep_phase_demo
+```
+
+The sleep-phase demo now reports a simple forgetting signal:
+`forgetting_delta = final_task_loss - baseline_task_loss`.
+It also reports task-split forgetting (`delta_a`, `delta_b`) for a two-task setup.
 
 Run a simple CPU matmul benchmark:
 
@@ -133,6 +189,34 @@ RSI_ML_MATMUL_TILE=64 cargo run -p rsi_ml --example matmul_bench
 
 # one-time runtime autotune (per process)
 RSI_ML_MATMUL_AUTOTUNE=1 cargo run -p rsi_ml --example matmul_bench
+```
+
+Run standardized Criterion benchmarks:
+
+```bash
+cargo bench -p rsi_ml
+# or targeted benches
+cargo bench -p rsi_ml --bench matmul
+cargo bench -p rsi_ml --bench ops
+```
+
+See baseline numbers and benchmark notes in `docs/BENCHMARKS.md`.
+
+PowerShell profiling helper:
+
+```powershell
+./scripts/profile_matmul.ps1
+```
+
+Feature flags for performance experiments:
+
+```bash
+# enable trace logs in core runtime
+cargo run -p rsi_ml --example matmul_bench --features trace
+
+# reserved flags for next backend stages
+# --features simd
+# --features gpu_stub
 ```
 
 ### 2) Use the top-level crate

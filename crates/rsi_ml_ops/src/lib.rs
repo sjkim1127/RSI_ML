@@ -1,4 +1,6 @@
 use rsi_ml_core::{Tensor, TensorError};
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 pub fn add(lhs: &Tensor, rhs: &Tensor) -> Result<Tensor, TensorError> {
     lhs.add(rhs)
@@ -117,6 +119,25 @@ pub fn embedding(token_ids: &[usize], table: &Tensor) -> Result<Tensor, TensorEr
     let vocab = shape[0];
     let dim = shape[1];
 
+    // Fast gather path for inference/non-trainable embedding tables.
+    if !table.requires_grad() {
+        let t = table.eval();
+        let mut out = vec![0.0; token_ids.len() * dim];
+        for (row, token_id) in token_ids.iter().enumerate() {
+            if *token_id >= vocab {
+                return Err(TensorError::InvalidShape {
+                    shape: vec![token_ids.len(), vocab],
+                    data_len: *token_id,
+                });
+            }
+            let src = &t[*token_id * dim..(*token_id + 1) * dim];
+            let dst = &mut out[row * dim..(row + 1) * dim];
+            dst.copy_from_slice(src);
+        }
+        return Tensor::from_loaded(out, vec![token_ids.len(), dim], false);
+    }
+
+    // Gradient-preserving fallback path for trainable embedding tables.
     let mut one_hot = vec![0.0; token_ids.len() * vocab];
     for (row, token_id) in token_ids.iter().enumerate() {
         if *token_id >= vocab {
@@ -295,6 +316,33 @@ fn place_matrix(d_head: usize, d_model: usize, offset: usize) -> Result<Tensor, 
     Tensor::from_loaded(m, vec![d_head, d_model], false)
 }
 
+fn head_projection_matrices(
+    d_model: usize,
+    num_heads: usize,
+) -> Result<Vec<(Tensor, Tensor)>, TensorError> {
+    thread_local! {
+        static CACHE: RefCell<HashMap<(usize, usize), Vec<(Tensor, Tensor)>>> = RefCell::new(HashMap::new());
+    }
+
+    if let Some(v) = CACHE.with(|c| c.borrow().get(&(d_model, num_heads)).cloned()) {
+        return Ok(v);
+    }
+
+    let d_head = d_model / num_heads;
+    let mut mats = Vec::with_capacity(num_heads);
+    for h in 0..num_heads {
+        let offset = h * d_head;
+        let select = select_matrix(d_model, d_head, offset)?;
+        let place = place_matrix(d_head, d_model, offset)?;
+        mats.push((select, place));
+    }
+
+    CACHE.with(|c| {
+        c.borrow_mut().insert((d_model, num_heads), mats.clone());
+    });
+    Ok(mats)
+}
+
 pub fn multi_head_self_attention(
     input: &Tensor,
     w_q: &Tensor,
@@ -322,19 +370,16 @@ pub fn multi_head_self_attention(
     let q = input.matmul(w_q)?;
     let k = input.matmul(w_k)?;
     let v = input.matmul(w_v)?;
-    let d_head = d_model / num_heads;
+    let projection_mats = head_projection_matrices(d_model, num_heads)?;
 
     let mut combined: Option<Tensor> = None;
-    for h in 0..num_heads {
-        let offset = h * d_head;
-        let select = select_matrix(d_model, d_head, offset)?;
-        let place = place_matrix(d_head, d_model, offset)?;
+    for (select, place) in projection_mats.iter().take(num_heads) {
 
-        let q_h = q.matmul(&select)?;
-        let k_h = k.matmul(&select)?;
-        let v_h = v.matmul(&select)?;
+        let q_h = q.matmul(select)?;
+        let k_h = k.matmul(select)?;
+        let v_h = v.matmul(select)?;
         let attn_h = scaled_dot_product_attention(&q_h, &k_h, &v_h, use_causal_mask)?;
-        let packed = attn_h.matmul(&place)?;
+        let packed = attn_h.matmul(place)?;
 
         combined = Some(match combined {
             Some(acc) => acc.add(&packed)?,

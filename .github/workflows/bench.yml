@@ -1,0 +1,58 @@
+name: Bench
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run Criterion benchmark (matmul)
+        run: cargo bench -p rsi_ml --bench matmul -- --noplot
+
+      - name: Run Criterion benchmark (ops)
+        run: cargo bench -p rsi_ml --bench ops -- --noplot
+
+      - name: Run matmul throughput example
+        run: cargo run -p rsi_ml --release --example matmul_bench | tee bench_output.txt
+
+      - name: Check regression thresholds
+        run: |
+          python3 - <<'PY'
+          import re
+          import sys
+
+          text = open("bench_output.txt", "r", encoding="utf-8").read()
+          vals = []
+          for m in re.finditer(r"throughput_GFLOPS=([0-9.]+)", text):
+              vals.append(float(m.group(1)))
+          if len(vals) < 3:
+              print("Could not parse enough GFLOPS results.")
+              sys.exit(1)
+
+          # Conservative floor for shared CI runners.
+          floor = 0.35
+          soft_floor = 0.7
+          if any(v < soft_floor for v in vals):
+              print("Warning: soft threshold breached:", vals)
+          if any(v < floor for v in vals):
+              print("Performance regression threshold failed:", vals)
+              sys.exit(1)
+          print("Benchmark thresholds passed:", vals)
+          PY
+
+      - name: Upload Criterion results
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-results
+          path: target/criterion

@@ -14,8 +14,9 @@ pub use rsi_ml_ops::{
     sinusoidal_positional_encoding, transformer_block, transformer_ffn, TransformerBlockWeights,
 };
 pub use train::{
-    full_hybrid_train_loop, full_train_loop, HybridTrainConfig, HybridTrainStepMetrics,
-    TrainLoopConfig, TrainStepMetrics,
+    full_evolution_train_loop, full_hybrid_train_loop, full_hybrid_train_loop_with_sleep,
+    full_train_loop, EvolutionTrainConfig, EvolutionTrainStepMetrics, HybridTrainConfig,
+    HybridTrainStepMetrics, SleepPhaseConfig, TrainLoopConfig, TrainStepMetrics,
 };
 pub use data::{one_hot, SequenceBatchIter, SequenceDataset};
 pub use genome::{
@@ -33,7 +34,8 @@ mod tests {
         multi_head_self_attention, transformer_block, transformer_ffn, TransformerBlockWeights,
         sinusoidal_positional_encoding, add_positional_encoding, decoder_next_token_logits, Adam,
         CharTokenizer, Genome, GenomeInstruction, GenomeMutator, MutationEvent, Optimizer, SGD, SequenceBatchIter,
-        SequenceDataset, Tensor, TrainLoopConfig, HybridTrainConfig, full_hybrid_train_loop,
+        SequenceDataset, Tensor, TrainLoopConfig, HybridTrainConfig, SleepPhaseConfig,
+        EvolutionTrainConfig, full_evolution_train_loop, full_hybrid_train_loop, full_hybrid_train_loop_with_sleep,
         evolutionary_search_step,
     };
 
@@ -499,5 +501,129 @@ mod tests {
             |_m| {},
         )
         .unwrap();
+    }
+
+    #[test]
+    fn hybrid_sleep_train_loop_runs() {
+        let mut genome = Genome::from_seed_mlp(88, 2, 6, 1).unwrap();
+        let mut mutator = GenomeMutator::new(9);
+        let mut params = Vec::new();
+        for inst in &genome.instructions {
+            if let GenomeInstruction::Linear { weight, bias } = inst {
+                params.push(weight.clone());
+                if let Some(b) = bias {
+                    params.push(b.clone());
+                }
+            }
+        }
+        let mut optim = SGD::new(params, 0.03);
+        let x = Tensor::from_loaded(vec![1.0, 2.0, 2.0, 1.0], vec![2, 2], false).unwrap();
+        let y = Tensor::from_loaded(vec![3.0, 3.0], vec![2, 1], false).unwrap();
+
+        let mut sleep_count = 0usize;
+        full_hybrid_train_loop_with_sleep(
+            &mut optim,
+            &mut genome,
+            &mut mutator,
+            HybridTrainConfig {
+                epochs: 1,
+                steps_per_epoch: 8,
+                mutation_every: 2,
+                mutation_trials: 3,
+            },
+            SleepPhaseConfig {
+                every_steps: 4,
+                dream_steps: 2,
+            },
+            |g, _, _| {
+                let pred = g.forward(&x)?;
+                mse(&pred, &y)
+            },
+            |g, _, _| {
+                let pred = g.forward(&x)?;
+                let task = mse(&pred, &y)?.eval()[0];
+                Ok(task + g.complexity_score() as f32 * 0.0001)
+            },
+            |g, _, _, dream_idx| {
+                let noise = Tensor::from_loaded(
+                    vec![0.1 + dream_idx as f32 * 0.01, -0.1, 0.05, -0.05],
+                    vec![2, 2],
+                    false,
+                )?;
+                let pred = g.forward(&noise)?;
+                let target = Tensor::from_loaded(vec![0.0, 0.0], vec![2, 1], false)?;
+                let task = mse(&pred, &target)?;
+                g.kolmogorov_loss(&task, 0.00005)
+            },
+            |g, _, _| {
+                // Simple prune: collapse repeated activations in sequence.
+                let mut pruned = Vec::with_capacity(g.instructions.len());
+                for inst in &g.instructions {
+                    let is_same_activation = matches!(
+                        (pruned.last(), inst),
+                        (
+                            Some(GenomeInstruction::Relu),
+                            GenomeInstruction::Relu
+                        ) | (
+                            Some(GenomeInstruction::Tanh),
+                            GenomeInstruction::Tanh
+                        )
+                    );
+                    if !is_same_activation {
+                        pruned.push(inst.clone());
+                    }
+                }
+                g.instructions = pruned;
+            },
+            |m| {
+                if m.sleep_applied {
+                    sleep_count += 1;
+                    assert!(m.dream_loss.is_some());
+                }
+            },
+        )
+        .unwrap();
+
+        assert!(sleep_count >= 2);
+    }
+
+    #[test]
+    fn evolution_only_loop_runs_without_backward() {
+        let mut genome = Genome::from_seed_mlp(66, 2, 4, 1).unwrap();
+        let mut mutator = GenomeMutator::new(777);
+        let x = Tensor::from_loaded(vec![1.0, 2.0, 2.0, 1.0], vec![2, 2], false).unwrap();
+        let y = Tensor::from_loaded(vec![3.0, 3.0], vec![2, 1], false).unwrap();
+
+        let mut saw_growth = false;
+        full_evolution_train_loop(
+            &mut genome,
+            &mut mutator,
+            EvolutionTrainConfig {
+                generations: 8,
+                trials_per_generation: 6,
+                growth_every: 4,
+                lookahead_steps: 2,
+                lookahead_alpha: 0.3,
+            },
+            |g, _gen| {
+                let pred = g.forward(&x)?;
+                let task = mse(&pred, &y)?.eval()[0];
+                Ok(task + g.complexity_score() as f32 * 0.0001)
+            },
+            |g, _gen| {
+                g.instructions.push(GenomeInstruction::Tanh);
+                Ok(true)
+            },
+            |m| {
+                assert!(m.effective_score.is_finite());
+                if m.growth_applied {
+                    saw_growth = true;
+                }
+            },
+        )
+        .unwrap();
+
+        assert!(saw_growth);
+        assert!(!genome.instructions.is_empty());
     }
 }

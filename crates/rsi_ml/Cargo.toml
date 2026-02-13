@@ -3,8 +3,25 @@ name = "rsi_ml"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+simd = ["rsi_ml_core/simd"]
+trace = ["rsi_ml_core/trace"]
+gpu_stub = ["rsi_ml_core/gpu_stub"]
+
 [dependencies]
 rsi_ml_autograd = { path = "../rsi_ml_autograd" }
 rsi_ml_core = { path = "../rsi_ml_core" }
 rsi_ml_optim = { path = "../rsi_ml_optim" }
 rsi_ml_ops = { path = "../rsi_ml_ops" }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "matmul"
+harness = false
+
+[[bench]]
+name = "ops"
+harness = false

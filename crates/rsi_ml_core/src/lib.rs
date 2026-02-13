@@ -681,13 +681,17 @@ impl Tensor {
                     let b_val = b.eval();
 
                     // dL/dA = dL/dY * B^T
-                    let b_t = transpose_2d(&b_val, k, n);
-                    let da = matmul_tiled_parallel(&grad_now, &b_t, m, n, k);
+                    let mut b_t = Vec::with_capacity(k * n);
+                    transpose_2d_into(&b_val, k, n, &mut b_t);
+                    let mut da = vec![0.0; m * k];
+                    matmul_tiled_parallel_into(&grad_now, &b_t, m, n, k, &mut da);
                     a.accumulate_grad(&da);
 
                     // dL/dB = A^T * dL/dY
-                    let a_t = transpose_2d(&a_val, m, k);
-                    let db = matmul_tiled_parallel(&a_t, &grad_now, k, m, n);
+                    let mut a_t = Vec::with_capacity(m * k);
+                    transpose_2d_into(&a_val, m, k, &mut a_t);
+                    let mut db = vec![0.0; k * n];
+                    matmul_tiled_parallel_into(&a_t, &grad_now, k, m, n, &mut db);
                     b.accumulate_grad(&db);
                 }
                 Op::Reshape => {
@@ -1209,20 +1213,46 @@ fn numel(shape: &[usize]) -> usize {
     shape.iter().product()
 }
 
-fn transpose_2d(src: &[f32], rows: usize, cols: usize) -> Vec<f32> {
-    let mut out = vec![0.0; rows * cols];
+fn transpose_2d_into(src: &[f32], rows: usize, cols: usize, out: &mut Vec<f32>) {
+    out.clear();
+    out.resize(rows * cols, 0.0);
     for r in 0..rows {
         for c in 0..cols {
             out[c * rows + r] = src[r * cols + c];
         }
     }
-    out
 }
 
 fn matmul_tiled_parallel(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
     let tile = select_tile_size(k, n);
     let mut out = vec![0.0; m * n];
+    matmul_tiled_parallel_with_tile_into(a, b, m, k, n, tile, &mut out);
+    out
+}
 
+fn matmul_tiled_parallel_into(
+    a: &[f32],
+    b: &[f32],
+    m: usize,
+    k: usize,
+    n: usize,
+    out: &mut Vec<f32>,
+) {
+    let tile = select_tile_size(k, n);
+    matmul_tiled_parallel_with_tile_into(a, b, m, k, n, tile, out);
+}
+
+fn matmul_tiled_parallel_with_tile_into(
+    a: &[f32],
+    b: &[f32],
+    m: usize,
+    k: usize,
+    n: usize,
+    tile: usize,
+    out: &mut Vec<f32>,
+) {
+    out.clear();
+    out.resize(m * n, 0.0);
     out.par_chunks_mut(n).enumerate().for_each(|(i, row_out)| {
         let row_a = &a[i * k..(i + 1) * k];
         for kk in (0..k).step_by(tile) {
@@ -1239,14 +1269,14 @@ fn matmul_tiled_parallel(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> 
             }
         }
     });
-
-    out
 }
 
 fn select_tile_size(k: usize, n: usize) -> usize {
     if let Ok(raw) = std::env::var("RSI_ML_MATMUL_TILE") {
         if let Ok(v) = raw.parse::<usize>() {
             if matches!(v, 8 | 16 | 32 | 64 | 128) {
+                #[cfg(feature = "trace")]
+                eprintln!("[rsi_ml_core] matmul tile from env: {v}");
                 return v;
             }
         }
@@ -1254,17 +1284,23 @@ fn select_tile_size(k: usize, n: usize) -> usize {
 
     if std::env::var("RSI_ML_MATMUL_AUTOTUNE").ok().as_deref() == Some("1") {
         static BEST_TILE: OnceLock<usize> = OnceLock::new();
-        return *BEST_TILE.get_or_init(autotune_tile_once);
+        let t = *BEST_TILE.get_or_init(autotune_tile_once);
+        #[cfg(feature = "trace")]
+        eprintln!("[rsi_ml_core] matmul autotuned tile: {t}");
+        return t;
     }
 
     let max_dim = k.max(n);
-    if max_dim >= 1024 {
+    let t = if max_dim >= 1024 {
         64
     } else if max_dim >= 256 {
         32
     } else {
         16
-    }
+    };
+    #[cfg(feature = "trace")]
+    eprintln!("[rsi_ml_core] matmul heuristic tile: {t}");
+    t
 }
 
 fn autotune_tile_once() -> usize {
@@ -1300,24 +1336,7 @@ fn matmul_tiled_parallel_with_tile(
     tile: usize,
 ) -> Vec<f32> {
     let mut out = vec![0.0; m * n];
-
-    out.par_chunks_mut(n).enumerate().for_each(|(i, row_out)| {
-        let row_a = &a[i * k..(i + 1) * k];
-        for kk in (0..k).step_by(tile) {
-            let k_end = (kk + tile).min(k);
-            for jj in (0..n).step_by(tile) {
-                let j_end = (jj + tile).min(n);
-                for x in kk..k_end {
-                    let a_val = row_a[x];
-                    let b_row = &b[x * n..x * n + n];
-                    for j in jj..j_end {
-                        row_out[j] += a_val * b_row[j];
-                    }
-                }
-            }
-        }
-    });
-
+    matmul_tiled_parallel_with_tile_into(a, b, m, k, n, tile, &mut out);
     out
 }
 

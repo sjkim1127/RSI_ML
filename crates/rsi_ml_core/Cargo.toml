@@ -3,5 +3,11 @@ name = "rsi_ml_core"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+simd = []
+trace = []
+gpu_stub = []
+
 [dependencies]
 rayon = "1.11.0"
