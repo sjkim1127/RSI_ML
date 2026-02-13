@@ -138,6 +138,16 @@ metrics to `genome_search_metrics.csv`:
 `effective_score` uses reverse-time validation:
 `effective = base_score + alpha * (future_score - base_score)`.
 
+Run the Project Prometheus demo (oracle-guided meta-evolution):
+
+```bash
+cargo run -p rsi_ml --example prometheus_demo
+```
+
+This demo logs guided mutation records to `prometheus_logs.csv` and evaluates only top-ranked
+candidates predicted by the oracle before applying real genome scoring.
+Prometheus v2 uses a tiny MLP oracle + replay buffer + dynamic top-k evaluation.
+
 Run swarm worker/coordinator demos (seed-only exchange for low-bandwidth distributed search):
 
 ```bash

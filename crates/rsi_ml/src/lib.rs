@@ -1,6 +1,7 @@
 pub mod train;
 pub mod data;
 pub mod genome;
+pub mod meta_oracle;
 pub mod tokenizer;
 
 pub use rsi_ml_autograd::AutogradExt;
@@ -23,6 +24,10 @@ pub use genome::{
     evolutionary_search_step, Genome, GenomeInstruction, GenomeMutator, MutationEvent,
     TransformerBlockWeightsOwned,
 };
+pub use meta_oracle::{
+    guided_evolutionary_search_step, EvolutionLogEntry, GuidedSearchConfig, GuidedSearchOutcome,
+    MutationOracle,
+};
 pub use tokenizer::CharTokenizer;
 
 #[cfg(test)]
@@ -36,7 +41,8 @@ mod tests {
         CharTokenizer, Genome, GenomeInstruction, GenomeMutator, MutationEvent, Optimizer, SGD, SequenceBatchIter,
         SequenceDataset, Tensor, TrainLoopConfig, HybridTrainConfig, SleepPhaseConfig,
         EvolutionTrainConfig, full_evolution_train_loop, full_hybrid_train_loop, full_hybrid_train_loop_with_sleep,
-        evolutionary_search_step,
+        evolutionary_search_step, guided_evolutionary_search_step, GuidedSearchConfig,
+        MutationOracle,
     };
 
     #[test]
@@ -625,5 +631,38 @@ mod tests {
 
         assert!(saw_growth);
         assert!(!genome.instructions.is_empty());
+    }
+
+    #[test]
+    fn guided_evolutionary_search_step_runs() {
+        let genome = Genome::from_seed_mlp(123, 2, 4, 1).unwrap();
+        let mut mutator = GenomeMutator::new(55);
+        let x = Tensor::from_loaded(vec![1.0, 2.0, 2.0, 1.0], vec![2, 2], false).unwrap();
+        let y = Tensor::from_loaded(vec![3.0, 3.0], vec![2, 1], false).unwrap();
+        let mut oracle = MutationOracle::new(0.02);
+        let (best, out) = guided_evolutionary_search_step(
+            0,
+            &genome,
+            &mut mutator,
+            &mut oracle,
+            GuidedSearchConfig {
+                candidate_pool: 8,
+                evaluate_top_k: 3,
+                max_evaluate_top_k: 6,
+                dynamic_top_k: true,
+            },
+            |g| {
+                let pred = g.forward(&x)?;
+                let task = mse(&pred, &y)?.eval()[0];
+                Ok(task + g.complexity_score() as f32 * 0.0001)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(out.evaluated_candidates, 3);
+        assert!(out.selected_top_k >= 1);
+        assert!(!out.logs.is_empty());
+        assert!(out.best_score.is_finite());
+        assert!(!best.instructions.is_empty());
     }
 }
