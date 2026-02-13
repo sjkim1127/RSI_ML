@@ -1,0 +1,9 @@
+[package]
+name = "rsi_ml"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rsi_ml_autograd = { path = "../rsi_ml_autograd" }
+rsi_ml_core = { path = "../rsi_ml_core" }
+rsi_ml_ops = { path = "../rsi_ml_ops" }

@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "crates/rsi_ml_core",
+    "crates/rsi_ml_autograd",
+    "crates/rsi_ml_ops",
+    "crates/rsi_ml",
+]
+resolver = "2"
