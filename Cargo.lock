@@ -9,6 +9,7 @@ dependencies = [
  "rsi_ml_autograd",
  "rsi_ml_core",
  "rsi_ml_ops",
+ "rsi_ml_optim",
 ]
 
 [[package]]
@@ -24,6 +25,13 @@ version = "0.1.0"
 
 [[package]]
 name = "rsi_ml_ops"
+version = "0.1.0"
+dependencies = [
+ "rsi_ml_core",
+]
+
+[[package]]
+name = "rsi_ml_optim"
 version = "0.1.0"
 dependencies = [
  "rsi_ml_core",

@@ -24,6 +24,11 @@ This repository is organized as a Cargo workspace and is designed for research o
 - `crates/rsi_ml_autograd`  
   Autograd extension trait (`AutogradExt`) for ergonomic gradient APIs.
 
+- `crates/rsi_ml_optim`  
+  Optimizer implementations:
+  - `SGD`
+  - `Adam`
+
 - `crates/rsi_ml`  
   Public entry crate re-exporting the common API from all internal crates.
 
@@ -35,14 +40,15 @@ Implemented:
 
 - procedural tensor materialization from `(seed, generator_func)`
 - lazy expression graph (`add`, `mul`, `sum`)
+- loss functions (`mse`, `l1`, `huber`)
+- optimizers (`SGD`, `Adam`)
 - scalar-loss backward pass for tested operations
-- unit tests for lazy behavior, cache behavior, and gradient correctness
+- unit tests for lazy behavior, cache behavior, gradient correctness, and simple training loops
 
 Not yet implemented:
 
 - full tensor broadcasting
 - advanced ops (e.g., matmul/conv/attention)
-- optimizers and training loop utilities
 - GPU backend and SIMD specialization
 - memory arena graph allocator
 

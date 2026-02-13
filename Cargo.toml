@@ -4,5 +4,6 @@ members = [
     "crates/rsi_ml_autograd",
     "crates/rsi_ml_ops",
     "crates/rsi_ml",
+    "crates/rsi_ml_optim",
 ]
 resolver = "2"

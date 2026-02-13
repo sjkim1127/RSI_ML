@@ -54,8 +54,11 @@ pub enum TensorData {
 enum Op {
     None,
     Add,
+    Sub,
     Mul,
     Sum,
+    Abs,
+    Huber(f32),
 }
 
 #[derive(Clone)]
@@ -139,6 +142,42 @@ impl Tensor {
         self.node.borrow().grad.clone()
     }
 
+    pub fn id(&self) -> usize {
+        Rc::as_ptr(&self.node) as usize
+    }
+
+    pub fn parameter_len(&self) -> usize {
+        numel(&self.shape())
+    }
+
+    pub fn apply_gradient_descent(&self, lr: f32) {
+        let mut node = self.node.borrow_mut();
+        let grad = node.grad.clone();
+        if let (Some(grad), TensorData::Loaded(data)) = (grad, &mut node.data) {
+            for (w, g) in data.iter_mut().zip(grad.iter()) {
+                *w -= lr * g;
+            }
+            node.value_cache = None;
+        }
+    }
+
+    pub fn apply_update(&self, update: &[f32]) -> Result<(), TensorError> {
+        let mut node = self.node.borrow_mut();
+        if let TensorData::Loaded(data) = &mut node.data {
+            if data.len() != update.len() {
+                return Err(TensorError::InvalidShape {
+                    shape: node.shape.clone(),
+                    data_len: update.len(),
+                });
+            }
+            for (w, u) in data.iter_mut().zip(update.iter()) {
+                *w -= u;
+            }
+            node.value_cache = None;
+        }
+        Ok(())
+    }
+
     pub fn eval(&self) -> Vec<f32> {
         self.materialize()
     }
@@ -191,6 +230,58 @@ impl Tensor {
         })
     }
 
+    pub fn sub(&self, other: &Tensor) -> Result<Tensor, TensorError> {
+        let lhs_shape = self.shape();
+        let rhs_shape = other.shape();
+        if lhs_shape != rhs_shape {
+            return Err(TensorError::ShapeMismatch {
+                lhs: lhs_shape,
+                rhs: rhs_shape,
+                op: "sub",
+            });
+        }
+
+        Ok(Tensor {
+            node: Rc::new(RefCell::new(Node {
+                data: TensorData::Expression,
+                shape: self.shape(),
+                requires_grad: self.requires_grad() || other.requires_grad(),
+                op: Op::Sub,
+                parents: vec![self.clone(), other.clone()],
+                value_cache: None,
+                grad: None,
+            })),
+        })
+    }
+
+    pub fn abs(&self) -> Tensor {
+        Tensor {
+            node: Rc::new(RefCell::new(Node {
+                data: TensorData::Expression,
+                shape: self.shape(),
+                requires_grad: self.requires_grad(),
+                op: Op::Abs,
+                parents: vec![self.clone()],
+                value_cache: None,
+                grad: None,
+            })),
+        }
+    }
+
+    pub fn huber(&self, delta: f32) -> Tensor {
+        Tensor {
+            node: Rc::new(RefCell::new(Node {
+                data: TensorData::Expression,
+                shape: self.shape(),
+                requires_grad: self.requires_grad(),
+                op: Op::Huber(delta),
+                parents: vec![self.clone()],
+                value_cache: None,
+                grad: None,
+            })),
+        }
+    }
+
     pub fn sum(&self) -> Result<Tensor, TensorError> {
         if numel(&self.shape()) == 0 {
             return Err(TensorError::EmptyReduction);
@@ -237,6 +328,11 @@ impl Tensor {
                     parents[0].accumulate_grad(&grad_now);
                     parents[1].accumulate_grad(&grad_now);
                 }
+                Op::Sub => {
+                    parents[0].accumulate_grad(&grad_now);
+                    let neg_grad: Vec<f32> = grad_now.iter().map(|g| -g).collect();
+                    parents[1].accumulate_grad(&neg_grad);
+                }
                 Op::Mul => {
                     let left_val = parents[0].eval();
                     let right_val = parents[1].eval();
@@ -256,6 +352,45 @@ impl Tensor {
                     let p_len = p.eval().len();
                     let expanded = vec![grad_now[0]; p_len];
                     p.accumulate_grad(&expanded);
+                }
+                Op::Abs => {
+                    let p = &parents[0];
+                    let p_val = p.eval();
+                    let local_grad: Vec<f32> = p_val
+                        .iter()
+                        .map(|v| {
+                            if *v > 0.0 {
+                                1.0
+                            } else if *v < 0.0 {
+                                -1.0
+                            } else {
+                                0.0
+                            }
+                        })
+                        .collect();
+                    let input_grad: Vec<f32> = grad_now
+                        .iter()
+                        .zip(local_grad.iter())
+                        .map(|(g, l)| g * l)
+                        .collect();
+                    p.accumulate_grad(&input_grad);
+                }
+                Op::Huber(delta) => {
+                    let p = &parents[0];
+                    let p_val = p.eval();
+                    let input_grad: Vec<f32> = grad_now
+                        .iter()
+                        .zip(p_val.iter())
+                        .map(|(g, x)| {
+                            let local = if x.abs() <= delta {
+                                *x
+                            } else {
+                                delta * x.signum()
+                            };
+                            g * local
+                        })
+                        .collect();
+                    p.accumulate_grad(&input_grad);
                 }
             }
         }
@@ -316,6 +451,11 @@ impl Tensor {
                         let b = n.parents[1].materialize();
                         a.iter().zip(b.iter()).map(|(x, y)| x + y).collect()
                     }
+                    Op::Sub => {
+                        let a = n.parents[0].materialize();
+                        let b = n.parents[1].materialize();
+                        a.iter().zip(b.iter()).map(|(x, y)| x - y).collect()
+                    }
                     Op::Mul => {
                         let a = n.parents[0].materialize();
                         let b = n.parents[1].materialize();
@@ -324,6 +464,23 @@ impl Tensor {
                     Op::Sum => {
                         let a = n.parents[0].materialize();
                         vec![a.iter().sum()]
+                    }
+                    Op::Abs => {
+                        let a = n.parents[0].materialize();
+                        a.iter().map(|v| v.abs()).collect()
+                    }
+                    Op::Huber(delta) => {
+                        let a = n.parents[0].materialize();
+                        a.iter()
+                            .map(|x| {
+                                let ax = x.abs();
+                                if ax <= delta {
+                                    0.5 * x * x
+                                } else {
+                                    delta * (ax - 0.5 * delta)
+                                }
+                            })
+                            .collect()
                     }
                     Op::None => vec![],
                 },
