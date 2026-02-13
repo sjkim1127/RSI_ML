@@ -3,6 +3,8 @@ use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::rc::Rc;
+use std::sync::OnceLock;
+use std::time::Instant;
 use rayon::prelude::*;
 
 pub type GeneratorFn = fn(u64, usize) -> f32;
@@ -1218,15 +1220,93 @@ fn transpose_2d(src: &[f32], rows: usize, cols: usize) -> Vec<f32> {
 }
 
 fn matmul_tiled_parallel(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
-    const TILE: usize = 32;
+    let tile = select_tile_size(k, n);
     let mut out = vec![0.0; m * n];
 
     out.par_chunks_mut(n).enumerate().for_each(|(i, row_out)| {
         let row_a = &a[i * k..(i + 1) * k];
-        for kk in (0..k).step_by(TILE) {
-            let k_end = (kk + TILE).min(k);
-            for jj in (0..n).step_by(TILE) {
-                let j_end = (jj + TILE).min(n);
+        for kk in (0..k).step_by(tile) {
+            let k_end = (kk + tile).min(k);
+            for jj in (0..n).step_by(tile) {
+                let j_end = (jj + tile).min(n);
+                for x in kk..k_end {
+                    let a_val = row_a[x];
+                    let b_row = &b[x * n..x * n + n];
+                    for j in jj..j_end {
+                        row_out[j] += a_val * b_row[j];
+                    }
+                }
+            }
+        }
+    });
+
+    out
+}
+
+fn select_tile_size(k: usize, n: usize) -> usize {
+    if let Ok(raw) = std::env::var("RSI_ML_MATMUL_TILE") {
+        if let Ok(v) = raw.parse::<usize>() {
+            if matches!(v, 8 | 16 | 32 | 64 | 128) {
+                return v;
+            }
+        }
+    }
+
+    if std::env::var("RSI_ML_MATMUL_AUTOTUNE").ok().as_deref() == Some("1") {
+        static BEST_TILE: OnceLock<usize> = OnceLock::new();
+        return *BEST_TILE.get_or_init(autotune_tile_once);
+    }
+
+    let max_dim = k.max(n);
+    if max_dim >= 1024 {
+        64
+    } else if max_dim >= 256 {
+        32
+    } else {
+        16
+    }
+}
+
+fn autotune_tile_once() -> usize {
+    let candidates = [16usize, 32, 64];
+    let m = 192usize;
+    let k = 192usize;
+    let n = 192usize;
+    let a = vec![0.01f32; m * k];
+    let b = vec![0.02f32; k * n];
+    let mut best_tile = 32usize;
+    let mut best_time = f64::INFINITY;
+
+    for tile in candidates {
+        let _warm = matmul_tiled_parallel_with_tile(&a, &b, m, k, n, tile);
+        let t0 = Instant::now();
+        let _ = matmul_tiled_parallel_with_tile(&a, &b, m, k, n, tile);
+        let dt = t0.elapsed().as_secs_f64();
+        if dt < best_time {
+            best_time = dt;
+            best_tile = tile;
+        }
+    }
+
+    best_tile
+}
+
+fn matmul_tiled_parallel_with_tile(
+    a: &[f32],
+    b: &[f32],
+    m: usize,
+    k: usize,
+    n: usize,
+    tile: usize,
+) -> Vec<f32> {
+    let mut out = vec![0.0; m * n];
+
+    out.par_chunks_mut(n).enumerate().for_each(|(i, row_out)| {
+        let row_a = &a[i * k..(i + 1) * k];
+        for kk in (0..k).step_by(tile) {
+            let k_end = (kk + tile).min(k);
+            for jj in (0..n).step_by(tile) {
+                let j_end = (jj + tile).min(n);
                 for x in kk..k_end {
                     let a_val = row_a[x];
                     let b_row = &b[x * n..x * n + n];

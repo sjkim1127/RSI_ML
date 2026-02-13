@@ -30,6 +30,9 @@ fn run_case(m: usize, k: usize, n: usize, iters: usize) {
 }
 
 fn main() {
+    println!(
+        "Tip: set RSI_ML_MATMUL_TILE=16|32|64|128 or RSI_ML_MATMUL_AUTOTUNE=1 before running."
+    );
     run_case(128, 128, 128, 30);
     run_case(256, 256, 256, 12);
     run_case(384, 384, 384, 6);

@@ -125,6 +125,16 @@ Run a simple CPU matmul benchmark:
 cargo run -p rsi_ml --example matmul_bench
 ```
 
+Tune tile selection:
+
+```bash
+# fixed tile
+RSI_ML_MATMUL_TILE=64 cargo run -p rsi_ml --example matmul_bench
+
+# one-time runtime autotune (per process)
+RSI_ML_MATMUL_AUTOTUNE=1 cargo run -p rsi_ml --example matmul_bench
+```
+
 ### 2) Use the top-level crate
 
 Add dependency (from another project):
