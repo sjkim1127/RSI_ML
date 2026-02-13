@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::rc::Rc;
+use rayon::prelude::*;
 
 pub type GeneratorFn = fn(u64, usize) -> f32;
 
@@ -678,29 +679,13 @@ impl Tensor {
                     let b_val = b.eval();
 
                     // dL/dA = dL/dY * B^T
-                    let mut da = vec![0.0; m * k];
-                    for i in 0..m {
-                        for x in 0..k {
-                            let mut acc = 0.0;
-                            for j in 0..n {
-                                acc += grad_now[i * n + j] * b_val[x * n + j];
-                            }
-                            da[i * k + x] = acc;
-                        }
-                    }
+                    let b_t = transpose_2d(&b_val, k, n);
+                    let da = matmul_tiled_parallel(&grad_now, &b_t, m, n, k);
                     a.accumulate_grad(&da);
 
                     // dL/dB = A^T * dL/dY
-                    let mut db = vec![0.0; k * n];
-                    for x in 0..k {
-                        for j in 0..n {
-                            let mut acc = 0.0;
-                            for i in 0..m {
-                                acc += a_val[i * k + x] * grad_now[i * n + j];
-                            }
-                            db[x * n + j] = acc;
-                        }
-                    }
+                    let a_t = transpose_2d(&a_val, m, k);
+                    let db = matmul_tiled_parallel(&a_t, &grad_now, k, m, n);
                     b.accumulate_grad(&db);
                 }
                 Op::Reshape => {
@@ -1018,17 +1003,7 @@ impl Tensor {
                         let k = a_shape[1];
                         let out_n = b_shape[1];
 
-                        let mut out = vec![0.0; m * out_n];
-                        for i in 0..m {
-                            for j in 0..out_n {
-                                let mut acc = 0.0;
-                                for x in 0..k {
-                                    acc += a[i * k + x] * b[x * out_n + j];
-                                }
-                                out[i * out_n + j] = acc;
-                            }
-                        }
-                        out
+                        matmul_tiled_parallel(&a, &b, m, k, out_n)
                     }
                     Op::SumAxis(dim) => {
                         let a = n.parents[0].materialize();
@@ -1230,6 +1205,40 @@ fn numel(shape: &[usize]) -> usize {
         return 0;
     }
     shape.iter().product()
+}
+
+fn transpose_2d(src: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    let mut out = vec![0.0; rows * cols];
+    for r in 0..rows {
+        for c in 0..cols {
+            out[c * rows + r] = src[r * cols + c];
+        }
+    }
+    out
+}
+
+fn matmul_tiled_parallel(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
+    const TILE: usize = 32;
+    let mut out = vec![0.0; m * n];
+
+    out.par_chunks_mut(n).enumerate().for_each(|(i, row_out)| {
+        let row_a = &a[i * k..(i + 1) * k];
+        for kk in (0..k).step_by(TILE) {
+            let k_end = (kk + TILE).min(k);
+            for jj in (0..n).step_by(TILE) {
+                let j_end = (jj + TILE).min(n);
+                for x in kk..k_end {
+                    let a_val = row_a[x];
+                    let b_row = &b[x * n..x * n + n];
+                    for j in jj..j_end {
+                        row_out[j] += a_val * b_row[j];
+                    }
+                }
+            }
+        }
+    });
+
+    out
 }
 
 #[cfg(test)]

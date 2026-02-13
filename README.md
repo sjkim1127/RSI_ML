@@ -119,6 +119,12 @@ Run the genome search demo:
 cargo run -p rsi_ml --example genome_search_demo
 ```
 
+Run a simple CPU matmul benchmark:
+
+```bash
+cargo run -p rsi_ml --example matmul_bench
+```
+
 ### 2) Use the top-level crate
 
 Add dependency (from another project):
