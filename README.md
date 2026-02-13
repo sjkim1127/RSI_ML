@@ -19,7 +19,7 @@ This repository is organized as a Cargo workspace and is designed for research o
   - basic backward propagation
 
 - `crates/rsi_ml_ops`  
-  Operation layer (`add`, `mul`, `sum`) as free functions.
+  Operation layer (`add`, `sub`, `mul`, `matmul`, `reshape`, `transpose2d`, `relu`, `tanh`, `sum`) as free functions.
 
 - `crates/rsi_ml_autograd`  
   Autograd extension trait (`AutogradExt`) for ergonomic gradient APIs.
@@ -31,6 +31,9 @@ This repository is organized as a Cargo workspace and is designed for research o
 
 - `crates/rsi_ml`  
   Public entry crate re-exporting the common API from all internal crates.
+  - includes `full_train_loop`, `CharTokenizer`, `SequenceDataset`, `SequenceBatchIter`
+  - includes `full_hybrid_train_loop` for gradient + mutation search
+  - includes `Genome` DSL primitives for seed-based program execution
 
 ## Current Status
 
@@ -40,6 +43,16 @@ Implemented:
 
 - procedural tensor materialization from `(seed, generator_func)`
 - lazy expression graph (`add`, `mul`, `sum`)
+- matrix multiplication (`matmul`) for dense-layer style computation
+- shape operators (`reshape`, `transpose2d`) for graph composition
+- activations (`relu`, `tanh`) and helper block (`linear_relu`)
+- training-time math ops (`div`, `exp`, `log`, `sqrt`, `sum_axis`)
+- language-model losses (`softmax`, `log_softmax`, `cross_entropy`)
+- transformer-ready primitives (`embedding`, `causal_mask`, `layer_norm`, `multi_head_self_attention`)
+- block-level transformer parts (`gelu`, `transformer_ffn`, `transformer_block`)
+- decoder utilities (`sinusoidal_positional_encoding`, `decoder_next_token_logits`)
+- seed-first genome DSL (`Genome`, `GenomeInstruction`, `kolmogorov_loss`, mutation helper)
+- genome search helpers (`GenomeMutator`, `evolutionary_search_step`)
 - loss functions (`mse`, `l1`, `huber`)
 - optimizers (`SGD`, `Adam`)
 - scalar-loss backward pass for tested operations
@@ -58,6 +71,52 @@ Not yet implemented:
 
 ```bash
 cargo test --workspace
+```
+
+Run the 2-layer training example:
+
+```bash
+cargo run -p rsi_ml --example two_layer_mlp
+```
+
+Run the ReLU hidden-layer example:
+
+```bash
+cargo run -p rsi_ml --example two_layer_mlp_relu
+```
+
+Run the tiny language-model example:
+
+```bash
+cargo run -p rsi_ml --example tiny_lm_train
+```
+
+This example now uses a small transformer-style path:
+token embedding + sinusoidal positional encoding + transformer block + LM head.
+After training, it also runs autoregressive generation with temperature/top-k sampling.
+
+Run the mini attention demo:
+
+```bash
+cargo run -p rsi_ml --example mini_attention_demo
+```
+
+Run the transformer block demo:
+
+```bash
+cargo run -p rsi_ml --example transformer_block_demo
+```
+
+Run the tiny decoder logits demo:
+
+```bash
+cargo run -p rsi_ml --example tiny_decoder_demo
+```
+
+Run the genome search demo:
+
+```bash
+cargo run -p rsi_ml --example genome_search_demo
 ```
 
 ### 2) Use the top-level crate
