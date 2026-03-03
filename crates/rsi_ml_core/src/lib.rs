@@ -7,6 +7,8 @@ use std::sync::OnceLock;
 use std::time::Instant;
 use rayon::prelude::*;
 
+pub mod broadcast;
+
 pub type GeneratorFn = fn(u64, usize) -> f32;
 
 #[derive(Debug, Clone)]
@@ -53,7 +55,7 @@ pub enum TensorData {
     Expression,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Op {
     None,
     Add,
@@ -76,6 +78,7 @@ enum Op {
     Tanh,
     Abs,
     Huber(f32),
+    Broadcast(Vec<usize>),
 }
 
 #[derive(Clone)]
@@ -199,75 +202,125 @@ impl Tensor {
         self.materialize()
     }
 
-    pub fn add(&self, other: &Tensor) -> Result<Tensor, TensorError> {
-        let lhs_shape = self.shape();
-        let rhs_shape = other.shape();
-        if lhs_shape != rhs_shape {
-            return Err(TensorError::ShapeMismatch {
-                lhs: lhs_shape,
-                rhs: rhs_shape,
-                op: "add",
-            });
+    pub fn broadcast_to(&self, new_shape: &[usize]) -> Result<Tensor, TensorError> {
+        let current_shape = self.shape();
+        
+        // Use broadcast_shape to verify shapes are compatible
+        let final_shape = broadcast::broadcast_shape(&current_shape, new_shape)?;
+        
+        if current_shape == final_shape {
+            return Ok(self.clone());
         }
 
+        let requires_grad = self.node.borrow().requires_grad;
+
+        let node = Node {
+            data: TensorData::Expression,
+            shape: final_shape.clone(),
+            requires_grad,
+            op: Op::Broadcast(final_shape),
+            parents: vec![self.clone()],
+            value_cache: None,
+            grad: None,
+        };
+
         Ok(Tensor {
-            node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
-                shape: self.shape(),
-                requires_grad: self.requires_grad() || other.requires_grad(),
-                op: Op::Add,
-                parents: vec![self.clone(), other.clone()],
-                value_cache: None,
-                grad: None,
-            })),
+            node: Rc::new(RefCell::new(node)),
+        })
+    }
+
+    pub fn add(&self, other: &Tensor) -> Result<Tensor, TensorError> {
+        let s_shape = self.shape();
+        let o_shape = other.shape();
+        
+        // Calculate broadcasted shape
+        let target_shape = broadcast::broadcast_shape(&s_shape, &o_shape)?;
+        
+        // Broadcast both to the target shape
+        let lhs = self.broadcast_to(&target_shape)?;
+        let rhs = other.broadcast_to(&target_shape)?;
+
+        let requires_grad = lhs.node.borrow().requires_grad || rhs.node.borrow().requires_grad;
+        let node = Node {
+            data: TensorData::Expression,
+            shape: target_shape,
+            requires_grad,
+            op: Op::Add,
+            parents: vec![lhs, rhs],
+            value_cache: None,
+            grad: None,
+        };
+        Ok(Tensor {
+            node: Rc::new(RefCell::new(node)),
+        })
+    }
+
+    pub fn sub(&self, other: &Tensor) -> Result<Tensor, TensorError> {
+        let s_shape = self.shape();
+        let o_shape = other.shape();
+        
+        let target_shape = broadcast::broadcast_shape(&s_shape, &o_shape)?;
+        let lhs = self.broadcast_to(&target_shape)?;
+        let rhs = other.broadcast_to(&target_shape)?;
+
+        let requires_grad = lhs.node.borrow().requires_grad || rhs.node.borrow().requires_grad;
+        let node = Node {
+            data: TensorData::Expression,
+            shape: target_shape,
+            requires_grad,
+            op: Op::Sub,
+            parents: vec![lhs, rhs],
+            value_cache: None,
+            grad: None,
+        };
+        Ok(Tensor {
+            node: Rc::new(RefCell::new(node)),
         })
     }
 
     pub fn mul(&self, other: &Tensor) -> Result<Tensor, TensorError> {
-        let lhs_shape = self.shape();
-        let rhs_shape = other.shape();
-        if lhs_shape != rhs_shape {
-            return Err(TensorError::ShapeMismatch {
-                lhs: lhs_shape,
-                rhs: rhs_shape,
-                op: "mul",
-            });
-        }
+        let s_shape = self.shape();
+        let o_shape = other.shape();
+        
+        let target_shape = broadcast::broadcast_shape(&s_shape, &o_shape)?;
+        let lhs = self.broadcast_to(&target_shape)?;
+        let rhs = other.broadcast_to(&target_shape)?;
 
+        let requires_grad = lhs.node.borrow().requires_grad || rhs.node.borrow().requires_grad;
+        let node = Node {
+            data: TensorData::Expression,
+            shape: target_shape,
+            requires_grad,
+            op: Op::Mul,
+            parents: vec![lhs, rhs],
+            value_cache: None,
+            grad: None,
+        };
         Ok(Tensor {
-            node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
-                shape: self.shape(),
-                requires_grad: self.requires_grad() || other.requires_grad(),
-                op: Op::Mul,
-                parents: vec![self.clone(), other.clone()],
-                value_cache: None,
-                grad: None,
-            })),
+            node: Rc::new(RefCell::new(node)),
         })
     }
 
     pub fn div(&self, other: &Tensor) -> Result<Tensor, TensorError> {
-        let lhs_shape = self.shape();
-        let rhs_shape = other.shape();
-        if lhs_shape != rhs_shape {
-            return Err(TensorError::ShapeMismatch {
-                lhs: lhs_shape,
-                rhs: rhs_shape,
-                op: "div",
-            });
-        }
+        let s_shape = self.shape();
+        let o_shape = other.shape();
+        
+        let target_shape = broadcast::broadcast_shape(&s_shape, &o_shape)?;
+        let lhs = self.broadcast_to(&target_shape)?;
+        let rhs = other.broadcast_to(&target_shape)?;
 
+        let requires_grad = lhs.node.borrow().requires_grad || rhs.node.borrow().requires_grad;
+        let node = Node {
+            data: TensorData::Expression,
+            shape: target_shape,
+            requires_grad,
+            op: Op::Div,
+            parents: vec![lhs, rhs],
+            value_cache: None,
+            grad: None,
+        };
         Ok(Tensor {
-            node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
-                shape: self.shape(),
-                requires_grad: self.requires_grad() || other.requires_grad(),
-                op: Op::Div,
-                parents: vec![self.clone(), other.clone()],
-                value_cache: None,
-                grad: None,
-            })),
+            node: Rc::new(RefCell::new(node)),
         })
     }
 
@@ -400,29 +453,6 @@ impl Tensor {
         })
     }
 
-    pub fn sub(&self, other: &Tensor) -> Result<Tensor, TensorError> {
-        let lhs_shape = self.shape();
-        let rhs_shape = other.shape();
-        if lhs_shape != rhs_shape {
-            return Err(TensorError::ShapeMismatch {
-                lhs: lhs_shape,
-                rhs: rhs_shape,
-                op: "sub",
-            });
-        }
-
-        Ok(Tensor {
-            node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
-                shape: self.shape(),
-                requires_grad: self.requires_grad() || other.requires_grad(),
-                op: Op::Sub,
-                parents: vec![self.clone(), other.clone()],
-                value_cache: None,
-                grad: None,
-            })),
-        })
-    }
 
     pub fn abs(&self) -> Tensor {
         Tensor {
@@ -621,14 +651,14 @@ impl Tensor {
         for tensor in topo.into_iter().rev() {
             let (op, parents, grad_now) = {
                 let n = tensor.node.borrow();
-                (n.op, n.parents.clone(), n.grad.clone())
+                (n.op.clone(), n.parents.clone(), n.grad.clone())
             };
 
             let Some(grad_now) = grad_now else {
                 continue;
             };
 
-            match op {
+            match &op {
                 Op::None => {}
                 Op::Add => {
                     parents[0].accumulate_grad(&grad_now);
@@ -717,8 +747,8 @@ impl Tensor {
                     let mut p_grad = vec![0.0; rows];
                     for r in 0..rows {
                         let mut acc = 0.0;
-                        for c in 0..cols {
-                            acc += grad_now[r * cols + c];
+                        for c in 0..*cols {
+                            acc += grad_now[r * *cols + c];
                         }
                         p_grad[r] = acc;
                     }
@@ -731,7 +761,7 @@ impl Tensor {
                     let mut p_grad = vec![0.0; cols];
                     for c in 0..cols {
                         let mut acc = 0.0;
-                        for r in 0..rows {
+                        for r in 0..*rows {
                             acc += grad_now[r * cols + c];
                         }
                         p_grad[c] = acc;
@@ -799,7 +829,7 @@ impl Tensor {
                     let cols = shape[1];
                     let mut input_grad = vec![0.0; y.len()];
 
-                    if dim == 1 {
+                    if *dim == 1 {
                         for r in 0..rows {
                             let mut dot = 0.0;
                             for c in 0..cols {
@@ -833,7 +863,7 @@ impl Tensor {
                     let cols = shape[1];
                     let mut input_grad = vec![0.0; y.len()];
 
-                    if dim == 1 {
+                    if *dim == 1 {
                         for r in 0..rows {
                             let mut row_sum = 0.0;
                             for c in 0..cols {
@@ -865,7 +895,7 @@ impl Tensor {
                     let cols = p_shape[1];
                     let mut p_grad = vec![0.0; rows * cols];
 
-                    if dim == 0 {
+                    if *dim == 0 {
                         for r in 0..rows {
                             for c in 0..cols {
                                 p_grad[r * cols + c] = grad_now[c];
@@ -916,15 +946,36 @@ impl Tensor {
                         .iter()
                         .zip(p_val.iter())
                         .map(|(g, x)| {
-                            let local = if x.abs() <= delta {
+                            let local = if x.abs() <= *delta {
                                 *x
                             } else {
-                                delta * x.signum()
+                                *delta * x.signum()
                             };
                             g * local
                         })
                         .collect();
                     p.accumulate_grad(&input_grad);
+                }
+                Op::Broadcast(target_shape) => {
+                    let p = &parents[0];
+                    let p_shape = p.shape();
+                    
+                    let mut p_grad = vec![0.0; numel(&p_shape)];
+                    let target_strides = broadcast::compute_strides(target_shape);
+                    let p_strides = broadcast::compute_strides(&p_shape);
+
+                    for (i, &g) in grad_now.iter().enumerate() {
+                        let orig_idx = broadcast::map_broadcast_index(
+                            i,
+                            target_shape,
+                            &target_strides,
+                            &p_shape,
+                            &p_strides,
+                        );
+                        p_grad[orig_idx] += g;
+                    }
+                    
+                    p.accumulate_grad(&p_grad);
                 }
             }
         }
@@ -979,7 +1030,7 @@ impl Tensor {
                     let total = numel(shape);
                     (0..total).map(|idx| generator_func(*seed, idx)).collect()
                 }
-                TensorData::Expression => match n.op {
+                TensorData::Expression => match &n.op {
                     Op::Add => {
                         let a = n.parents[0].materialize();
                         let b = n.parents[1].materialize();
@@ -1017,7 +1068,7 @@ impl Tensor {
                         let rows = in_shape[0];
                         let cols = in_shape[1];
 
-                        if dim == 0 {
+                        if *dim == 0 {
                             let mut out = vec![0.0; cols];
                             for r in 0..rows {
                                 for c in 0..cols {
@@ -1054,7 +1105,7 @@ impl Tensor {
                         let cols = shape[1];
                         let mut out = vec![0.0; rows * cols];
 
-                        if dim == 1 {
+                        if *dim == 1 {
                             for r in 0..rows {
                                 let row = &a[r * cols..(r + 1) * cols];
                                 let row_max = row
@@ -1097,7 +1148,7 @@ impl Tensor {
                         let cols = shape[1];
                         let mut out = vec![0.0; rows * cols];
 
-                        if dim == 1 {
+                        if *dim == 1 {
                             for r in 0..rows {
                                 let row = &a[r * cols..(r + 1) * cols];
                                 let row_max = row
@@ -1148,10 +1199,10 @@ impl Tensor {
                     Op::RepeatCols(cols) => {
                         let a = n.parents[0].materialize();
                         let rows = n.parents[0].shape()[0];
-                        let mut out = vec![0.0; rows * cols];
+                        let mut out = vec![0.0; rows * *cols];
                         for r in 0..rows {
-                            for c in 0..cols {
-                                out[r * cols + c] = a[r];
+                            for c in 0..*cols {
+                                out[r * *cols + c] = a[r];
                             }
                         }
                         out
@@ -1159,8 +1210,8 @@ impl Tensor {
                     Op::RepeatRows(rows) => {
                         let a = n.parents[0].materialize();
                         let cols = n.parents[0].shape()[1];
-                        let mut out = vec![0.0; rows * cols];
-                        for r in 0..rows {
+                        let mut out = vec![0.0; *rows * cols];
+                        for r in 0..*rows {
                             for c in 0..cols {
                                 out[r * cols + c] = a[c];
                             }
@@ -1188,13 +1239,32 @@ impl Tensor {
                         a.iter()
                             .map(|x| {
                                 let ax = x.abs();
-                                if ax <= delta {
+                                if ax <= *delta {
                                     0.5 * x * x
                                 } else {
-                                    delta * (ax - 0.5 * delta)
+                                    *delta * (ax - 0.5 * *delta)
                                 }
                             })
                             .collect()
+                    }
+                    Op::Broadcast(target_shape) => {
+                        let a = n.parents[0].materialize();
+                        let a_shape = n.parents[0].shape();
+                        let target_strides = broadcast::compute_strides(target_shape);
+                        let a_strides = broadcast::compute_strides(&a_shape);
+
+                        let mut out = vec![0.0; numel(target_shape)];
+                        for i in 0..out.len() {
+                            let orig_idx = broadcast::map_broadcast_index(
+                                i,
+                                target_shape,
+                                &target_strides,
+                                &a_shape,
+                                &a_strides,
+                            );
+                            out[i] = a[orig_idx];
+                        }
+                        out
                     }
                     Op::None => vec![],
                 },
@@ -1545,5 +1615,80 @@ mod tests {
         assert_eq!(rr.eval(), vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0]);
         rr.sum().unwrap().backward();
         assert_eq!(row.grad().unwrap(), vec![2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn broadcast_forward_test() {
+        let a = Tensor::from_loaded(vec![1.0, 2.0], vec![2], true).unwrap();
+        let b = a.broadcast_to(&[2, 2]).unwrap();
+        
+        assert_eq!(b.shape(), vec![2, 2]);
+        assert_eq!(b.eval(), vec![1.0, 2.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn broadcast_backward_reduces_test() {
+        let a = Tensor::from_loaded(vec![1.0, 2.0], vec![2], true).unwrap();
+        let b = a.broadcast_to(&[2, 2]).unwrap();
+        
+        // Summing the broadcasted tensor:
+        // [1.0, 2.0]
+        // [1.0, 2.0]
+        // sum = 6.0
+        let loss = b.sum().unwrap();
+        loss.backward();
+
+        // Gradient should be accumulated over the broadcasted dimension
+        // Each element in `a` is added twice to the sum, so its gradient is 2.0
+        assert_eq!(a.grad().unwrap(), vec![2.0, 2.0]);
+    }
+
+    #[test]
+    fn elementwise_add_with_implicit_broadcast() {
+        // [2, 3] + [3]
+        let a = Tensor::from_loaded(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            vec![2, 3],
+            true,
+        ).unwrap();
+        let b = Tensor::from_loaded(
+            vec![10.0, 20.0, 30.0],
+            vec![3],
+            true,
+        ).unwrap();
+
+        let y = a.add(&b).unwrap();
+        assert_eq!(y.shape(), vec![2, 3]);
+        assert_eq!(y.eval(), vec![11.0, 22.0, 33.0, 14.0, 25.0, 36.0]);
+
+        let loss = y.sum().unwrap();
+        loss.backward();
+
+        // g_A = ones(2x3)
+        assert_eq!(a.grad().unwrap(), vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
+        // g_B = sum(ones(2x3), axis=0) -> [2.0, 2.0, 2.0]
+        assert_eq!(b.grad().unwrap(), vec![2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn elementwise_mul_with_implicit_broadcast() {
+        // [2, 1] * [1, 2] -> [2, 2]
+        let a = Tensor::from_loaded(vec![2.0, 3.0], vec![2, 1], true).unwrap();
+        let b = Tensor::from_loaded(vec![4.0, 5.0], vec![1, 2], true).unwrap();
+
+        let y = a.mul(&b).unwrap();
+        assert_eq!(y.shape(), vec![2, 2]);
+        assert_eq!(y.eval(), vec![8.0, 10.0, 12.0, 15.0]);
+
+        let loss = y.sum().unwrap();
+        loss.backward();
+
+        // d(A*B)/dA = sum(B, axis_broadcasted)
+        // b broadcasted is [[4, 5], [4, 5]], sum along axis 1 -> [9, 9]
+        assert_eq!(a.grad().unwrap(), vec![9.0, 9.0]);
+
+        // d(A*B)/dB = sum(A, axis_broadcasted)
+        // a broadcasted is [[2, 2], [3, 3]], sum along axis 0 -> [5, 5]
+        assert_eq!(b.grad().unwrap(), vec![5.0, 5.0]);
     }
 }
