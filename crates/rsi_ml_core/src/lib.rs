@@ -4,8 +4,12 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::rc::Rc;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 use rayon::prelude::*;
+
+/// 전역 고유 ID 카운터 (ABA 문제 방지)
+static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
 pub mod broadcast;
 
@@ -88,6 +92,7 @@ pub struct Tensor {
 
 #[derive(Clone)]
 struct Node {
+    id: usize,
     data: TensorData,
     shape: Vec<usize>,
     requires_grad: bool,
@@ -95,6 +100,10 @@ struct Node {
     parents: Vec<Tensor>,
     value_cache: Option<Vec<f32>>,
     grad: Option<Vec<f32>>,
+}
+
+fn next_node_id() -> usize {
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 impl Tensor {
@@ -112,6 +121,7 @@ impl Tensor {
 
         Ok(Self {
             node: Rc::new(RefCell::new(Node {
+                id: next_node_id(),
                 data: TensorData::Loaded(data),
                 shape,
                 requires_grad,
@@ -131,6 +141,7 @@ impl Tensor {
     ) -> Self {
         Self {
             node: Rc::new(RefCell::new(Node {
+                id: next_node_id(),
                 data: TensorData::Procedural {
                     seed,
                     shape: shape.clone(),
@@ -163,7 +174,7 @@ impl Tensor {
     }
 
     pub fn id(&self) -> usize {
-        Rc::as_ptr(&self.node) as usize
+        self.node.borrow().id
     }
 
     pub fn parameter_len(&self) -> usize {
@@ -215,6 +226,7 @@ impl Tensor {
         let requires_grad = self.node.borrow().requires_grad;
 
         let node = Node {
+            id: next_node_id(),
             data: TensorData::Expression,
             shape: final_shape.clone(),
             requires_grad,
@@ -242,6 +254,7 @@ impl Tensor {
 
         let requires_grad = lhs.node.borrow().requires_grad || rhs.node.borrow().requires_grad;
         let node = Node {
+            id: next_node_id(),
             data: TensorData::Expression,
             shape: target_shape,
             requires_grad,
@@ -265,6 +278,7 @@ impl Tensor {
 
         let requires_grad = lhs.node.borrow().requires_grad || rhs.node.borrow().requires_grad;
         let node = Node {
+            id: next_node_id(),
             data: TensorData::Expression,
             shape: target_shape,
             requires_grad,
@@ -288,6 +302,7 @@ impl Tensor {
 
         let requires_grad = lhs.node.borrow().requires_grad || rhs.node.borrow().requires_grad;
         let node = Node {
+            id: next_node_id(),
             data: TensorData::Expression,
             shape: target_shape,
             requires_grad,
@@ -311,6 +326,7 @@ impl Tensor {
 
         let requires_grad = lhs.node.borrow().requires_grad || rhs.node.borrow().requires_grad;
         let node = Node {
+            id: next_node_id(),
             data: TensorData::Expression,
             shape: target_shape,
             requires_grad,
@@ -350,7 +366,8 @@ impl Tensor {
 
         Ok(Tensor {
             node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
+                id: next_node_id(),
+            data: TensorData::Expression,
                 shape: vec![lhs_shape[0], rhs_shape[1]],
                 requires_grad: self.requires_grad() || other.requires_grad(),
                 op: Op::MatMul,
@@ -373,7 +390,8 @@ impl Tensor {
 
         Ok(Tensor {
             node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
+                id: next_node_id(),
+            data: TensorData::Expression,
                 shape: new_shape,
                 requires_grad: self.requires_grad(),
                 op: Op::Reshape,
@@ -392,7 +410,8 @@ impl Tensor {
 
         Ok(Tensor {
             node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
+                id: next_node_id(),
+            data: TensorData::Expression,
                 shape: vec![shape[1], shape[0]],
                 requires_grad: self.requires_grad(),
                 op: Op::Transpose2D,
@@ -417,7 +436,8 @@ impl Tensor {
 
         Ok(Tensor {
             node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
+                id: next_node_id(),
+            data: TensorData::Expression,
                 shape: vec![shape[0], cols],
                 requires_grad: self.requires_grad(),
                 op: Op::RepeatCols(cols),
@@ -442,7 +462,8 @@ impl Tensor {
 
         Ok(Tensor {
             node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
+                id: next_node_id(),
+            data: TensorData::Expression,
                 shape: vec![rows, shape[1]],
                 requires_grad: self.requires_grad(),
                 op: Op::RepeatRows(rows),
@@ -457,7 +478,8 @@ impl Tensor {
     pub fn abs(&self) -> Tensor {
         Tensor {
             node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
+                id: next_node_id(),
+            data: TensorData::Expression,
                 shape: self.shape(),
                 requires_grad: self.requires_grad(),
                 op: Op::Abs,
@@ -471,7 +493,8 @@ impl Tensor {
     pub fn huber(&self, delta: f32) -> Tensor {
         Tensor {
             node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
+                id: next_node_id(),
+            data: TensorData::Expression,
                 shape: self.shape(),
                 requires_grad: self.requires_grad(),
                 op: Op::Huber(delta),
@@ -485,7 +508,8 @@ impl Tensor {
     pub fn relu(&self) -> Tensor {
         Tensor {
             node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
+                id: next_node_id(),
+            data: TensorData::Expression,
                 shape: self.shape(),
                 requires_grad: self.requires_grad(),
                 op: Op::Relu,
@@ -499,7 +523,8 @@ impl Tensor {
     pub fn tanh(&self) -> Tensor {
         Tensor {
             node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
+                id: next_node_id(),
+            data: TensorData::Expression,
                 shape: self.shape(),
                 requires_grad: self.requires_grad(),
                 op: Op::Tanh,
@@ -517,7 +542,8 @@ impl Tensor {
 
         Ok(Tensor {
             node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
+                id: next_node_id(),
+            data: TensorData::Expression,
                 shape: vec![1],
                 requires_grad: self.requires_grad(),
                 op: Op::Sum,
@@ -545,7 +571,8 @@ impl Tensor {
 
         Ok(Tensor {
             node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
+                id: next_node_id(),
+            data: TensorData::Expression,
                 shape: out_shape,
                 requires_grad: self.requires_grad(),
                 op: Op::SumAxis(dim),
@@ -559,7 +586,8 @@ impl Tensor {
     pub fn exp(&self) -> Tensor {
         Tensor {
             node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
+                id: next_node_id(),
+            data: TensorData::Expression,
                 shape: self.shape(),
                 requires_grad: self.requires_grad(),
                 op: Op::Exp,
@@ -573,7 +601,8 @@ impl Tensor {
     pub fn log(&self) -> Tensor {
         Tensor {
             node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
+                id: next_node_id(),
+            data: TensorData::Expression,
                 shape: self.shape(),
                 requires_grad: self.requires_grad(),
                 op: Op::Log,
@@ -587,7 +616,8 @@ impl Tensor {
     pub fn sqrt(&self) -> Tensor {
         Tensor {
             node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
+                id: next_node_id(),
+            data: TensorData::Expression,
                 shape: self.shape(),
                 requires_grad: self.requires_grad(),
                 op: Op::Sqrt,
@@ -606,7 +636,8 @@ impl Tensor {
 
         Ok(Tensor {
             node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
+                id: next_node_id(),
+            data: TensorData::Expression,
                 shape: self.shape(),
                 requires_grad: self.requires_grad(),
                 op: Op::Softmax(dim),
@@ -625,7 +656,8 @@ impl Tensor {
 
         Ok(Tensor {
             node: Rc::new(RefCell::new(Node {
-                data: TensorData::Expression,
+                id: next_node_id(),
+            data: TensorData::Expression,
                 shape: self.shape(),
                 requires_grad: self.requires_grad(),
                 op: Op::LogSoftmax(dim),
@@ -981,18 +1013,36 @@ impl Tensor {
         }
     }
 
+    /// 반복적 DFS로 위상 정렬 수행 (깊은 그래프에서 스택 오버플로우 방지)
     fn build_topo(&self, topo: &mut Vec<Tensor>, seen: &mut HashSet<usize>) {
-        let key = Rc::as_ptr(&self.node) as usize;
-        if seen.contains(&key) {
-            return;
-        }
-        seen.insert(key);
+        // 명시적 스택: (텐서, 부모가 이미 처리되었는지 여부)
+        let mut stack: Vec<(Tensor, bool)> = vec![(self.clone(), false)];
 
-        let parents = self.node.borrow().parents.clone();
-        for p in parents {
-            p.build_topo(topo, seen);
+        while let Some((tensor, parents_processed)) = stack.pop() {
+            let key = tensor.node.borrow().id;
+
+            if parents_processed {
+                // 부모가 모두 처리된 후에 자신을 topo에 추가
+                topo.push(tensor);
+                continue;
+            }
+
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.insert(key);
+
+            // 자신을 "부모 처리 완료" 상태로 다시 스택에 넣음
+            stack.push((tensor.clone(), true));
+
+            // 부모들을 스택에 추가 (역순으로 넣어야 원래 순서 유지)
+            let parents = tensor.node.borrow().parents.clone();
+            for p in parents.into_iter().rev() {
+                if !seen.contains(&p.node.borrow().id) {
+                    stack.push((p, false));
+                }
+            }
         }
-        topo.push(self.clone());
     }
 
     fn accumulate_grad(&self, incoming: &[f32]) {
@@ -1028,7 +1078,10 @@ impl Tensor {
                     generator_func,
                 } => {
                     let total = numel(shape);
-                    (0..total).map(|idx| generator_func(*seed, idx)).collect()
+                    let seed_val = *seed;
+                    let gen_fn = *generator_func;
+                    // 부작용 없는 fn 포인터이므로 Rayon 병렬화 안전
+                    (0..total).into_par_iter().map(|idx| gen_fn(seed_val, idx)).collect()
                 }
                 TensorData::Expression => match &n.op {
                     Op::Add => {
@@ -1341,18 +1394,33 @@ fn matmul_tiled_parallel_with_tile_into(
     });
 }
 
+/// 환경변수 캐싱: 프로그램 시작 시 한 번만 읽어서 저장
+static CACHED_TILE_FROM_ENV: OnceLock<Option<usize>> = OnceLock::new();
+static CACHED_AUTOTUNE_ENABLED: OnceLock<bool> = OnceLock::new();
+
+fn cached_tile_from_env() -> Option<usize> {
+    *CACHED_TILE_FROM_ENV.get_or_init(|| {
+        std::env::var("RSI_ML_MATMUL_TILE")
+            .ok()
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .filter(|v| matches!(v, 8 | 16 | 32 | 64 | 128))
+    })
+}
+
+fn cached_autotune_enabled() -> bool {
+    *CACHED_AUTOTUNE_ENABLED.get_or_init(|| {
+        std::env::var("RSI_ML_MATMUL_AUTOTUNE").ok().as_deref() == Some("1")
+    })
+}
+
 fn select_tile_size(k: usize, n: usize) -> usize {
-    if let Ok(raw) = std::env::var("RSI_ML_MATMUL_TILE") {
-        if let Ok(v) = raw.parse::<usize>() {
-            if matches!(v, 8 | 16 | 32 | 64 | 128) {
-                #[cfg(feature = "trace")]
-                eprintln!("[rsi_ml_core] matmul tile from env: {v}");
-                return v;
-            }
-        }
+    if let Some(v) = cached_tile_from_env() {
+        #[cfg(feature = "trace")]
+        eprintln!("[rsi_ml_core] matmul tile from env: {v}");
+        return v;
     }
 
-    if std::env::var("RSI_ML_MATMUL_AUTOTUNE").ok().as_deref() == Some("1") {
+    if cached_autotune_enabled() {
         static BEST_TILE: OnceLock<usize> = OnceLock::new();
         let t = *BEST_TILE.get_or_init(autotune_tile_once);
         #[cfg(feature = "trace")]
