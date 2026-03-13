@@ -83,23 +83,20 @@ pub fn linear_relu(
     Ok(linear(input, weight, bias)?.relu())
 }
 
-fn full_like(shape: Vec<usize>, value: f32) -> Result<Tensor, TensorError> {
-    let len: usize = shape.iter().product();
-    Tensor::from_loaded(vec![value; len], shape, false)
-}
-
 pub fn gelu(input: &Tensor) -> Result<Tensor, TensorError> {
     // GELU approximation:
     // 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
-    let shape = input.shape();
+    //
+    // Scalar [1] tensors are used here and broadcast to the input shape, avoiding
+    // the allocation of four full-size constant arrays.
     let x2 = input.mul(input)?;
     let x3 = x2.mul(input)?;
-    let c = full_like(shape.clone(), 0.044715)?;
+    let c = Tensor::from_loaded(vec![0.044715], vec![1], false)?;
     let inner = input.add(&x3.mul(&c)?)?;
-    let k = full_like(shape.clone(), 0.7978846)?; // sqrt(2/pi)
+    let k = Tensor::from_loaded(vec![0.7978846], vec![1], false)?; // sqrt(2/pi)
     let t = inner.mul(&k)?.tanh();
-    let one = full_like(shape.clone(), 1.0)?;
-    let half = full_like(shape, 0.5)?;
+    let one = Tensor::from_loaded(vec![1.0], vec![1], false)?;
+    let half = Tensor::from_loaded(vec![0.5], vec![1], false)?;
     half.mul(input)?.mul(&one.add(&t)?)
 }
 
@@ -167,12 +164,18 @@ pub fn sinusoidal_positional_encoding(seq_len: usize, d_model: usize) -> Result<
             data_len: 0,
         });
     }
+    // Pre-compute the inverse denominators once per dimension index, rather than
+    // recomputing the expensive powf() call for every (pos, i) pair. This reduces
+    // the number of powf() invocations from seq_len × d_model to d_model.
+    let mut inv_denoms = vec![0.0_f32; d_model];
+    for i in 0..d_model {
+        let pair = (i / 2) as f32;
+        inv_denoms[i] = 1.0 / 10000.0_f32.powf((2.0 * pair) / d_model as f32);
+    }
     let mut data = vec![0.0; seq_len * d_model];
     for pos in 0..seq_len {
         for i in 0..d_model {
-            let pair = (i / 2) as f32;
-            let denom = 10000.0_f32.powf((2.0 * pair) / d_model as f32);
-            let angle = pos as f32 / denom;
+            let angle = pos as f32 * inv_denoms[i];
             data[pos * d_model + i] = if i % 2 == 0 { angle.sin() } else { angle.cos() };
         }
     }
@@ -234,12 +237,10 @@ pub fn scaled_dot_product_attention(
 
     let k_t = k.transpose2d()?;
     let mut scores = q.matmul(&k_t)?;
+    // Use a scalar [1] tensor that broadcasts, rather than allocating a full
+    // seq² constant array just to multiply every element by the same value.
     let scale = 1.0 / (q_shape[1] as f32).sqrt();
-    let scale_tensor = Tensor::from_loaded(
-        vec![scale; scores.shape().iter().product()],
-        scores.shape(),
-        false,
-    )?;
+    let scale_tensor = Tensor::from_loaded(vec![scale], vec![1], false)?;
     scores = scores.mul(&scale_tensor)?;
 
     if use_causal_mask {
