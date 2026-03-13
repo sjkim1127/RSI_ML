@@ -183,12 +183,14 @@ impl Tensor {
 
     pub fn apply_gradient_descent(&self, lr: f32) {
         let mut node = self.node.borrow_mut();
-        let grad = node.grad.clone();
-        if let (Some(grad), TensorData::Loaded(data)) = (grad, &mut node.data) {
-            for (w, g) in data.iter_mut().zip(grad.iter()) {
+        // Destructure to obtain simultaneous access to separate fields without
+        // cloning the gradient vector.
+        let Node { grad, data, value_cache, .. } = &mut *node;
+        if let (Some(grad_ref), TensorData::Loaded(weights)) = (grad.as_ref(), data) {
+            for (w, g) in weights.iter_mut().zip(grad_ref.iter()) {
                 *w -= lr * g;
             }
-            node.value_cache = None;
+            *value_cache = None;
         }
     }
 
@@ -812,24 +814,25 @@ impl Tensor {
                 }
                 Op::Tanh => {
                     let p = &parents[0];
-                    let p_val = p.eval();
+                    // Use the cached forward output y = tanh(x) directly.
+                    // d(tanh(x))/dx = 1 - tanh(x)^2 = 1 - y^2, so there is no
+                    // need to re-evaluate the parent or recompute tanh().
+                    let y = tensor.eval();
                     let input_grad: Vec<f32> = grad_now
                         .iter()
-                        .zip(p_val.iter())
-                        .map(|(g, x)| {
-                            let t = x.tanh();
-                            g * (1.0 - t * t)
-                        })
+                        .zip(y.iter())
+                        .map(|(g, t)| g * (1.0 - t * t))
                         .collect();
                     p.accumulate_grad(&input_grad);
                 }
                 Op::Exp => {
                     let p = &parents[0];
-                    let p_val = p.eval();
+                    // d(exp(x))/dx = exp(x) = y, the cached forward output.
+                    let y = tensor.eval();
                     let input_grad: Vec<f32> = grad_now
                         .iter()
-                        .zip(p_val.iter())
-                        .map(|(g, x)| g * x.exp())
+                        .zip(y.iter())
+                        .map(|(g, y)| g * y)
                         .collect();
                     p.accumulate_grad(&input_grad);
                 }
@@ -845,11 +848,14 @@ impl Tensor {
                 }
                 Op::Sqrt => {
                     let p = &parents[0];
-                    let p_val = p.eval();
+                    // d(sqrt(x))/dx = 0.5 / sqrt(x) = 0.5 / y, where y is the
+                    // cached forward output. This avoids re-evaluating the parent
+                    // and recomputing sqrt().
+                    let y = tensor.eval();
                     let input_grad: Vec<f32> = grad_now
                         .iter()
-                        .zip(p_val.iter())
-                        .map(|(g, x)| g * 0.5 / x.sqrt())
+                        .zip(y.iter())
+                        .map(|(g, y)| g * 0.5 / y)
                         .collect();
                     p.accumulate_grad(&input_grad);
                 }
@@ -945,17 +951,22 @@ impl Tensor {
                 }
                 Op::Sum => {
                     let p = &parents[0];
-                    let p_len = p.eval().len();
+                    // Use the shape to compute the parent element count instead of
+                    // calling eval(), which would materialise the entire tensor.
+                    let p_len = p.shape().iter().product::<usize>();
                     let expanded = vec![grad_now[0]; p_len];
                     p.accumulate_grad(&expanded);
                 }
                 Op::Abs => {
                     let p = &parents[0];
                     let p_val = p.eval();
-                    let local_grad: Vec<f32> = p_val
+                    // Combine sign computation and gradient scaling into a single
+                    // pass to avoid allocating an intermediate Vec<f32>.
+                    let input_grad: Vec<f32> = grad_now
                         .iter()
-                        .map(|v| {
-                            if *v > 0.0 {
+                        .zip(p_val.iter())
+                        .map(|(g, v)| {
+                            g * if *v > 0.0 {
                                 1.0
                             } else if *v < 0.0 {
                                 -1.0
@@ -963,11 +974,6 @@ impl Tensor {
                                 0.0
                             }
                         })
-                        .collect();
-                    let input_grad: Vec<f32> = grad_now
-                        .iter()
-                        .zip(local_grad.iter())
-                        .map(|(g, l)| g * l)
                         .collect();
                     p.accumulate_grad(&input_grad);
                 }
